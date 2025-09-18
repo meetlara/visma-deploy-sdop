@@ -28,7 +28,7 @@ runs:
         DESCRIPTION: ${{ github.event.head_commit.message }}
         RUN_STARTED_AT: ${{ github.event.workflow_run.run_started_at }}
       run: |
-        TIMESTAMP=$(date +%s)
+        WHEN_WAS_DEPLOYED=$(date -Iseconds)
         TO_ADD_LABELS=()
         IFS=',' read -ra TO_ADD_LABELS <<< "$EXTRA_LABELS"
 
@@ -53,7 +53,7 @@ runs:
             ],
             "labels": $LABELS,
             "description": "$DESCRIPTION",
-            "customfield_16561": "$TIMESTAMP",
+            "customfield_16561": "$WHEN_WAS_DEPLOYED",
             "customfield_19761": "$RUN_STARTED_AT",
             "customfield_26160": 10,
             "customfield_27260": 1,

@@ -41,6 +41,9 @@ runs:
         done
         LABELS=$(printf '"%s",' "${TO_ADD_LABELS[@]}")
         LABELS="[${LABELS%,}]"
+        
+        # Calculate difference in minutes
+        MINUTES_OF_DEPLOYMENT=$(( ($(date +%s) - $(date -d "$RUN_STARTED_AT" +%s)) / 60 ))
 
         PAYLOAD=$(cat <<EOF
         {
@@ -54,7 +57,7 @@ runs:
             "labels": $LABELS,
             "description": "$DESCRIPTION",
             "customfield_16561": "$WHEN_WAS_DEPLOYED",
-            "customfield_19761": "$RUN_STARTED_AT",
+            "customfield_19761": "$MINUTES_OF_DEPLOYMENT",
             "customfield_26160": 10,
             "customfield_27260": 1,
             "project": { "id": 40203 }

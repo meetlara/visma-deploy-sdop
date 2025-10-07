@@ -24,12 +24,14 @@ runs:
         JIRA_BASE_URL: ${{ inputs.jira_base_url }}
         TEST: ${{ inputs.test }}
         EXTRA_LABELS: ${{ inputs.extra_labels }}
-        SUMMARY: ${{ github.event.head_commit.message }}
-        DESCRIPTION: ${{ github.event.head_commit.message }}
-        RUN_STARTED_AT: ${{ github.event.workflow_run.run_started_at }}
+        SUMMARY: ${{ github.event.pull_request.title }}
+        DESCRIPTION: ${{ github.event.pull_request.body }}
+        PR_CREATED_AT: ${{ github.event.pull_request.created_at }}
+        GH_REPOSITORY: ${{ github.event.repository.name }}
+        PR_URL: ${{ github.event.pull_request.url }}
       run: |
         WHEN_WAS_DEPLOYED=$(date -Iseconds)
-        TO_ADD_LABELS=()
+        TO_ADD_LABELS=("$GH_REPOSITORY")
         IFS=',' read -ra TO_ADD_LABELS <<< "$EXTRA_LABELS"
 
         if [ "$TEST" = "true" ]; then
@@ -41,9 +43,9 @@ runs:
         done
         LABELS=$(printf '"%s",' "${TO_ADD_LABELS[@]}")
         LABELS="[${LABELS%,}]"
-        
+
         # Calculate difference in minutes
-        MINUTES_OF_DEPLOYMENT=$(( ($(date +%s) - $(date -d "$RUN_STARTED_AT" +%s)) / 60 ))
+        MINUTES_OF_PR_DEVELOPMENT=$(( ($(date +%s) - $(date -d "$PR_CREATED_AT" +%s)) / 60 ))
 
         PAYLOAD=$(cat <<EOF
         {
@@ -57,8 +59,7 @@ runs:
             "labels": $LABELS,
             "description": "$DESCRIPTION",
             "customfield_16561": "$WHEN_WAS_DEPLOYED",
-            "customfield_19761": $MINUTES_OF_DEPLOYMENT,
-            "customfield_26160": 10,
+            "customfield_26160": $MINUTES_OF_PR_DEVELOPMENT,
             "customfield_27260": 1,
             "project": { "id": 40203 }
           }

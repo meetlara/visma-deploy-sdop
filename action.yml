@@ -27,12 +27,15 @@ runs:
         SUMMARY: ${{ github.event.pull_request.title }}
         DESCRIPTION: ${{ github.event.pull_request.body }}
         PR_CREATED_AT: ${{ github.event.pull_request.created_at }}
+        PR_MERGED_AT: ${{ github.event.pull_request.merged_at }}
         GH_REPOSITORY: ${{ github.event.repository.name }}
         PR_URL: ${{ github.event.pull_request.url }}
       run: |
         WHEN_WAS_DEPLOYED=$(date -Iseconds)
-        TO_ADD_LABELS=("$GH_REPOSITORY")
+        TO_ADD_LABELS=()
         IFS=',' read -ra TO_ADD_LABELS <<< "$EXTRA_LABELS"
+
+        TO_ADD_LABELS+=("$GH_REPOSITORY")
 
         if [ "$TEST" = "true" ]; then
           TO_ADD_LABELS+=("SDOPexclude")
@@ -45,7 +48,7 @@ runs:
         LABELS="[${LABELS%,}]"
 
         # Calculate difference in minutes
-        MINUTES_OF_PR_DEVELOPMENT=$(( ($(date +%s) - $(date -d "$PR_CREATED_AT" +%s)) / 60 ))
+        MINUTES_OF_PR_DEVELOPMENT=$(( ($(date -d "$PR_MERGED_AT" +%s) - $(date -d "$PR_CREATED_AT" +%s)) / 60 ))
 
         PAYLOAD=$(cat <<EOF
         {
@@ -61,6 +64,7 @@ runs:
             "customfield_16561": "$WHEN_WAS_DEPLOYED",
             "customfield_26160": $MINUTES_OF_PR_DEVELOPMENT,
             "customfield_27260": 1,
+            "customfield_19460": "$PR_URL",
             "project": { "id": 40203 }
           }
         }

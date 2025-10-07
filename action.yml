@@ -30,12 +30,14 @@ runs:
         PR_MERGED_AT: ${{ github.event.pull_request.merged_at }}
         GH_REPOSITORY: ${{ github.event.repository.name }}
         PR_URL: ${{ github.event.pull_request.url }}
+        PR_AUTHOR: ${{ github.event.pull_request.user.login }}
       run: |
         WHEN_WAS_DEPLOYED=$(date -Iseconds)
         TO_ADD_LABELS=()
         IFS=',' read -ra TO_ADD_LABELS <<< "$EXTRA_LABELS"
 
-        TO_ADD_LABELS+=("$GH_REPOSITORY")
+        TO_ADD_LABELS+=("sub-repo-$GH_REPOSITORY")
+        TO_ADD_LABELS+=("sub-author-$PR_AUTHOR")
 
         if [ "$TEST" = "true" ]; then
           TO_ADD_LABELS+=("SDOPexclude")

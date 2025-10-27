@@ -98,11 +98,21 @@ runs:
         JIRA_TOKEN: ${{ inputs.jira_token }}
         JIRA_BASE_URL: ${{ inputs.jira_base_url }}
       run: |
-        echo "Me llega: ${{steps.create_jira.outputs.response}}"
         JIRA_TICKET_ID=$(echo "${{ fromJSON(steps.create_jira.outputs.response).key }}")
         echo "Issue key: $JIRA_TICKET_ID"
-        curl --location "$JIRA_BASE_URL/jira_gateway/transitionIssue?issueIdOrKey=$JIRA_TICKET_ID" \
+
+        PAYLOAD=$(cat <<EOF
+        { "transition": { "id": "21" } }
+        EOF
+        )
+
+        JIRA_RESPONSE=$(curl --location "$JIRA_BASE_URL/jira_gateway/transitionIssue?issueIdOrKey=$JIRA_TICKET_ID" \
           --header "Authorization: Bearer $JIRA_TOKEN" \
           --header "Content-Type: application/json" \
-          --data '{ "transition": { "id": "21" } }'
+          --data "$PAYLOAD")
+
+        echo "Transition response: $JIRA_RESPONSE"
+        
+
+        
 

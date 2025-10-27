@@ -33,6 +33,15 @@ runs:
         PR_URL: ${{ github.event.pull_request.url }}
         PR_AUTHOR: ${{ github.event.pull_request.user.login }}
       run: |
+        escape_json() {
+          local str="$1"
+          str="${str//\\/\\\\}"   # \ → \\
+          str="${str//\"/\\\"}"   # " → \"
+          str="${str//
+        /\\n}"   # salto de línea → \n
+          echo "$str"
+        }
+        
         WHEN_WAS_DEPLOYED=$(date -Iseconds)
         TO_ADD_LABELS=()
         IFS=',' read -ra TO_ADD_LABELS <<< "$EXTRA_LABELS"
@@ -63,7 +72,7 @@ runs:
               { "name": "1988-Lara AI" }
             ],
             "labels": $LABELS,
-            "description": "$DESCRIPTION",
+            "description": "$(escape_json "$DESCRIPTION")",
             "customfield_16561": "$WHEN_WAS_DEPLOYED",
             "customfield_26160": $MINUTES_OF_PR_DEVELOPMENT,
             "customfield_27260": 1,

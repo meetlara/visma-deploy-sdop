@@ -14,12 +14,13 @@ inputs:
     description: Is this execution a test/dry-run
     required: false
     default: "true"
+
 runs:
   using: "composite"
   steps:
     - name: Create Jira Ticket for SDOP Deployment
-      shell: bash
       id: create_jira
+      shell: bash
       env:
         JIRA_TOKEN: ${{ inputs.jira_token }}
         JIRA_BASE_URL: ${{ inputs.jira_base_url }}
@@ -45,7 +46,7 @@ runs:
         fi
 
         for i in "${!TO_ADD_LABELS[@]}"; do
-            TO_ADD_LABELS[$i]=$(echo "${TO_ADD_LABELS[$i]}" | xargs)
+          TO_ADD_LABELS[$i]=$(echo "${TO_ADD_LABELS[$i]}" | xargs)
         done
         LABELS=$(printf '"%s",' "${TO_ADD_LABELS[@]}")
         LABELS="[${LABELS%,}]"
@@ -54,31 +55,36 @@ runs:
         MINUTES_OF_PR_DEVELOPMENT=$(( ($(date -d "$PR_MERGED_AT" +%s) - $(date -d "$PR_CREATED_AT" +%s)) / 60 ))
 
         PAYLOAD=$(cat <<EOF
-  {
-    "verb": "POST",
-    "fields": {
-      "issuetype": { "name": "SDOP Deployment" },
-      "summary": "$SUMMARY",
-      "components": [
-        { "name": "1988-Lara AI" }
-      ],
-      "labels": $LABELS,
-      "description": "$DESCRIPTION",
-      "customfield_16561": "$WHEN_WAS_DEPLOYED",
-      "customfield_26160": $MINUTES_OF_PR_DEVELOPMENT,
-      "customfield_27260": 1,
-      "customfield_19460": "$PR_URL",
-      "project": { "id": 40203 }
-    }
+{
+  "verb": "POST",
+  "fields": {
+    "issuetype": { "name": "SDOP Deployment" },
+    "summary": "$SUMMARY",
+    "components": [
+      { "name": "1988-Lara AI" }
+    ],
+    "labels": $LABELS,
+    "description": "$DESCRIPTION",
+    "customfield_16561": "$WHEN_WAS_DEPLOYED",
+    "customfield_26160": $MINUTES_OF_PR_DEVELOPMENT,
+    "customfield_27260": 1,
+    "customfield_19460": "$PR_URL",
+    "project": { "id": 40203 }
   }
-  EOF
-  )
+}
+EOF
+)
 
-        JIRA_RESPONSE=$(curl --location "$JIRA_BASE_URL/jira_gateway/create_issue" --header "Authorization: Bearer $JIRA_TOKEN" --header "Content-Type: application/json" --data "$PAYLOAD")
-        echo $JIRA_RESPONSE
-        echo "response=$JIRA_RESPONSE" >> $GITHUB_OUTPUT
+        JIRA_RESPONSE=$(curl --location "$JIRA_BASE_URL/jira_gateway/create_issue" \
+          --header "Authorization: Bearer $JIRA_TOKEN" \
+          --header "Content-Type: application/json" \
+          --data "$PAYLOAD")
 
-          
+        echo "$JIRA_RESPONSE"
+        echo "response<<EOF" >> $GITHUB_OUTPUT
+        echo "$JIRA_RESPONSE" >> $GITHUB_OUTPUT
+        echo "EOF" >> $GITHUB_OUTPUT
+
     - name: Transition ticket status
       shell: bash
       env:

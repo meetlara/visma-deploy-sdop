@@ -79,7 +79,7 @@ runs:
           --header "Content-Type: application/json" \
           --data "$PAYLOAD")
 
-        echo "$JIRA_RESPONSE"
+        echo "Response: $JIRA_RESPONSE"
         echo "response<<EOF" >> $GITHUB_OUTPUT
         echo "$JIRA_RESPONSE" >> $GITHUB_OUTPUT
         echo "EOF" >> $GITHUB_OUTPUT

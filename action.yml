@@ -74,7 +74,9 @@ runs:
         EOF
         )
 
-        echo 'response=$(curl --location "$JIRA_BASE_URL/jira_gateway/create_issue" --header "Authorization: Bearer $JIRA_TOKEN" --header "Content-Type: application/json" --data "$PAYLOAD")' >> $GITHUB_OUTPUT
+        JIRA_RESPONSE=$(curl --location "$JIRA_BASE_URL/jira_gateway/create_issue" --header "Authorization: Bearer $JIRA_TOKEN" --header "Content-Type: application/json" --data "$PAYLOAD")
+        echo $JIRA_RESPONSE
+        echo "response=$JIRA_RESPONSE" >> $GITHUB_OUTPUT
 
           
     - name: Transition ticket status

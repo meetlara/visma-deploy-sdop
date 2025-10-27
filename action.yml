@@ -90,7 +90,19 @@ runs:
 
         echo "Request: $PAYLOAD"
         echo "Response: $JIRA_RESPONSE"
-        echo "response<<EOF" >> $GITHUB_OUTPUT
-        echo "$JIRA_RESPONSE" >> $GITHUB_OUTPUT
-        echo "EOF" >> $GITHUB_OUTPUT
+        echo "response=$JIRA_RESPONSE" >> $GITHUB_OUTPUT
+
+    - name: Transition ticket status
+      shell: bash
+      env:
+        JIRA_TOKEN: ${{ inputs.jira_token }}
+        JIRA_BASE_URL: ${{ inputs.jira_base_url }}
+      run: |
+        echo "Me llega: ${{steps.create_jira.outputs.response}}"
+        JIRA_TICKET_ID=$(echo "${{ fromJSON(steps.create_jira.outputs.response).key }}")
+        echo "Issue key: $JIRA_TICKET_ID"
+        curl --location "$JIRA_BASE_URL/jira_gateway/transitionIssue?issueIdOrKey=$JIRA_TICKET_ID" \
+          --header "Authorization: Bearer $JIRA_TOKEN" \
+          --header "Content-Type: application/json" \
+          --data '{ "transition": { "id": "21" } }'
 

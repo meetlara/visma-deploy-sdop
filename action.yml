@@ -19,6 +19,7 @@ runs:
   steps:
     - name: Create Jira Ticket for SDOP Deployment
       shell: bash
+      id: create_jira
       env:
         JIRA_TOKEN: ${{ inputs.jira_token }}
         JIRA_BASE_URL: ${{ inputs.jira_base_url }}

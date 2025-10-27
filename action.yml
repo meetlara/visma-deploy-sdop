@@ -54,25 +54,25 @@ runs:
         MINUTES_OF_PR_DEVELOPMENT=$(( ($(date -d "$PR_MERGED_AT" +%s) - $(date -d "$PR_CREATED_AT" +%s)) / 60 ))
 
         PAYLOAD=$(cat <<EOF
-        {
-          "verb": "POST",
-          "fields": {
-            "issuetype": { "name": "SDOP Deployment" },
-            "summary": "$SUMMARY",
-            "components": [
-              { "name": "1988-Lara AI" }
-            ],
-            "labels": $LABELS,
-            "description": "$DESCRIPTION",
-            "customfield_16561": "$WHEN_WAS_DEPLOYED",
-            "customfield_26160": $MINUTES_OF_PR_DEVELOPMENT,
-            "customfield_27260": 1,
-            "customfield_19460": "$PR_URL",
-            "project": { "id": 40203 }
-          }
-        }
-        EOF
-        )
+  {
+    "verb": "POST",
+    "fields": {
+      "issuetype": { "name": "SDOP Deployment" },
+      "summary": "$SUMMARY",
+      "components": [
+        { "name": "1988-Lara AI" }
+      ],
+      "labels": $LABELS,
+      "description": "$DESCRIPTION",
+      "customfield_16561": "$WHEN_WAS_DEPLOYED",
+      "customfield_26160": $MINUTES_OF_PR_DEVELOPMENT,
+      "customfield_27260": 1,
+      "customfield_19460": "$PR_URL",
+      "project": { "id": 40203 }
+    }
+  }
+  EOF
+  )
 
         JIRA_RESPONSE=$(curl --location "$JIRA_BASE_URL/jira_gateway/create_issue" --header "Authorization: Bearer $JIRA_TOKEN" --header "Content-Type: application/json" --data "$PAYLOAD")
         echo $JIRA_RESPONSE

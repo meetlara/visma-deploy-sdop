@@ -98,7 +98,7 @@ runs:
         JIRA_TOKEN: ${{ inputs.jira_token }}
         JIRA_BASE_URL: ${{ inputs.jira_base_url }}
       run: |
-        JIRA_TICKET_ID=$(echo "${{ fromJSON(steps.create_jira.outputs.response).key }}")
+        JIRA_TICKET_ID=$(echo "${{ fromJSON(steps.create_jira.outputs.response).value.key }}")
         echo "Issue key: $JIRA_TICKET_ID"
 
         PAYLOAD=$(cat <<EOF

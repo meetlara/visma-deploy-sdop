@@ -83,7 +83,7 @@ runs:
         EOF
         )
 
-        JIRA_RESPONSE=$(curl --location "$JIRA_BASE_URL/jira_gateway/create_issue" \
+        JIRA_RESPONSE=$(curl --location "$JIRA_BASE_URL/jira/createIssue" \
           --header "Authorization: Bearer $JIRA_TOKEN" \
           --header "Content-Type: application/json" \
           --data "$PAYLOAD")
@@ -106,7 +106,7 @@ runs:
         EOF
         )
 
-        JIRA_RESPONSE=$(curl --location "$JIRA_BASE_URL/jira_gateway/transitionIssue?issueIdOrKey=$JIRA_TICKET_ID" \
+        JIRA_RESPONSE=$(curl --location "$JIRA_BASE_URL/jira/transitionIssue?issueIdOrKey=$JIRA_TICKET_ID" \
           --header "Authorization: Bearer $JIRA_TOKEN" \
           --header "Content-Type: application/json" \
           --data "$PAYLOAD")

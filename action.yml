@@ -35,10 +35,11 @@ runs:
       run: |
         escape_json() {
           local str="$1"
-          str="${str//\\/\\\\}"   # \ → \\
+          str="${str//\\/\\\\}"   # \ → \\  
           str="${str//\"/\\\"}"   # " → \"
-          str="${str//
-        /\\n}"   # salto de línea → \n
+          str="${str//$'\n'/\\n}" # newline → \n
+          str="${str//$'\r'/}"    # remove carriage returns
+          str="${str//$'\t'/\\t}" # tab → \t
           echo "$str"
         }
         

@@ -13,7 +13,7 @@ inputs:
   test:
     description: Is this execution a test/dry-run
     required: false
-    default: "true"
+    default: "false"
 runs:
   using: "composite"
   steps:

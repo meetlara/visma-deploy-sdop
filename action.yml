@@ -32,6 +32,14 @@ runs:
         GH_TOKEN: ${{ github.token }}
         PR_URL: ${{ github.event.pull_request.url }}
         PR_AUTHOR: ${{ github.event.pull_request.user.login }}
+        EVENT_NAME: ${{ github.event_name }}
+        DEPLOY_STARTED_AT: ${{ github.event.workflow_run.run_started_at }}
+        DEPLOY_FINISHED_AT: ${{ github.event.workflow_run.updated_at }}
+        DEPLOY_HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+        DEPLOY_COMMIT_MESSAGE: ${{ github.event.workflow_run.head_commit.message }}
+        DEPLOY_RUN_URL: ${{ github.event.workflow_run.html_url }}
+        DEPLOY_ACTOR: ${{ github.event.workflow_run.actor.login }}
+        DEPLOY_WORKFLOW_PATH: ${{ github.event.workflow.path }}
       run: |
         escape_json() {
           local str="$1"
@@ -43,12 +51,55 @@ runs:
           echo "$str"
         }
         
-        WHEN_WAS_DEPLOYED=$(date -Iseconds)
+        # AWS keeps rolling out the Blue/Green deployment after the workflow is
+        # already done, so those minutes are never part of any run we can measure
+        MINUTES_OF_BLUE_GREEN_ROLLOUT=2
+        DEPLOY_LABEL=""
+
+        if [ "$EVENT_NAME" = "workflow_run" ]; then
+          # Triggered by the deploy workflow itself: measure that run, and take the
+          # PR data from the commit it deployed
+          WHEN_WAS_DEPLOYED="$DEPLOY_FINISHED_AT"
+          MINUTES_OF_PR_DEPLOYMENT=$(( ($(date -d "$DEPLOY_FINISHED_AT" +%s) - $(date -d "$DEPLOY_STARTED_AT" +%s)) / 60 + MINUTES_OF_BLUE_GREEN_ROLLOUT ))
+          DEPLOY_LABEL="sub-deploy-$(basename "$DEPLOY_WORKFLOW_PATH" .yml)"
+
+          PULL_REQUEST=$(gh api "repos/$GITHUB_REPOSITORY/commits/$DEPLOY_HEAD_SHA/pulls" --jq '.[0] // empty' || true)
+
+          if [ -n "$PULL_REQUEST" ]; then
+            SUMMARY=$(jq -r '.title' <<< "$PULL_REQUEST")
+            DESCRIPTION=$(jq -r '.body // ""' <<< "$PULL_REQUEST")
+            PR_URL=$(jq -r '.url' <<< "$PULL_REQUEST")
+            PR_AUTHOR=$(jq -r '.user.login' <<< "$PULL_REQUEST")
+          else
+            echo "::warning::No pull request found for $DEPLOY_HEAD_SHA, using the commit instead"
+            SUMMARY=$(head -1 <<< "$DEPLOY_COMMIT_MESSAGE")
+            DESCRIPTION="$DEPLOY_COMMIT_MESSAGE"
+            PR_URL="$DEPLOY_RUN_URL"
+            PR_AUTHOR="$DEPLOY_ACTOR"
+          fi
+        else
+          # Triggered by the merged PR, in parallel to the deploy: the closest we
+          # can measure is this run, which only reports
+          WHEN_WAS_DEPLOYED=$(date -Iseconds)
+          RUN_STARTED_AT=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" --jq '.run_started_at' || true)
+
+          if [ -z "$RUN_STARTED_AT" ] || [ "$RUN_STARTED_AT" = "null" ]; then
+            echo "::warning::Could not read run_started_at, falling back to the PR merge time"
+            RUN_STARTED_AT="$PR_MERGED_AT"
+          fi
+
+          MINUTES_OF_PR_DEPLOYMENT=$(( ($(date +%s) - $(date -d "$RUN_STARTED_AT" +%s)) / 60 + MINUTES_OF_BLUE_GREEN_ROLLOUT ))
+        fi
+
         TO_ADD_LABELS=()
         IFS=',' read -ra TO_ADD_LABELS <<< "$EXTRA_LABELS"
 
         TO_ADD_LABELS+=("sub-repo-$GH_REPOSITORY")
         TO_ADD_LABELS+=("sub-author-$PR_AUTHOR")
+
+        if [ -n "$DEPLOY_LABEL" ]; then
+          TO_ADD_LABELS+=("$DEPLOY_LABEL")
+        fi
 
         if [ "$TEST" = "true" ]; then
           TO_ADD_LABELS+=("SDOPexclude")
@@ -60,26 +111,12 @@ runs:
         LABELS=$(printf '"%s",' "${TO_ADD_LABELS[@]}")
         LABELS="[${LABELS%,}]"
 
-        # Minutes the deployment took: only this workflow run, not the whole PR
-        RUN_STARTED_AT=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" --jq '.run_started_at' || true)
-
-        if [ -z "$RUN_STARTED_AT" ] || [ "$RUN_STARTED_AT" = "null" ]; then
-          echo "::warning::Could not read run_started_at, falling back to the PR merge time"
-          RUN_STARTED_AT="$PR_MERGED_AT"
-        fi
-
-        # The deploy runs in a workflow of its own, in parallel to this one, so
-        # its rollout is not part of this run: ~2 minutes for the ECS deploy
-        ESTIMATED_DEPLOY_MINUTES=2
-
-        MINUTES_OF_PR_DEPLOYMENT=$(( ($(date +%s) - $(date -d "$RUN_STARTED_AT" +%s)) / 60 + ESTIMATED_DEPLOY_MINUTES ))
-
         PAYLOAD=$(cat <<EOF
         {
           "verb": "POST",
           "fields": {
             "issuetype": { "name": "SDOP Deployment" },
-            "summary": "$SUMMARY",
+            "summary": "$(escape_json "$SUMMARY")",
             "components": [
               { "name": "1988-Lara AI" }
             ],

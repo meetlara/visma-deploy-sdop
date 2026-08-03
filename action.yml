@@ -27,9 +27,9 @@ runs:
         EXTRA_LABELS: ${{ inputs.extra_labels }}
         SUMMARY: ${{ github.event.pull_request.title }}
         DESCRIPTION: ${{ github.event.pull_request.body }}
-        PR_CREATED_AT: ${{ github.event.pull_request.created_at }}
         PR_MERGED_AT: ${{ github.event.pull_request.merged_at }}
         GH_REPOSITORY: ${{ github.event.repository.name }}
+        GH_TOKEN: ${{ github.token }}
         PR_URL: ${{ github.event.pull_request.url }}
         PR_AUTHOR: ${{ github.event.pull_request.user.login }}
       run: |
@@ -60,8 +60,15 @@ runs:
         LABELS=$(printf '"%s",' "${TO_ADD_LABELS[@]}")
         LABELS="[${LABELS%,}]"
 
-        # Calculate difference in minutes
-        MINUTES_OF_PR_DEVELOPMENT=$(( ($(date -d "$PR_MERGED_AT" +%s) - $(date -d "$PR_CREATED_AT" +%s)) / 60 ))
+        # Minutes the deployment took: only this workflow run, not the whole PR
+        RUN_STARTED_AT=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" --jq '.run_started_at' || true)
+
+        if [ -z "$RUN_STARTED_AT" ] || [ "$RUN_STARTED_AT" = "null" ]; then
+          echo "::warning::Could not read run_started_at, falling back to the PR merge time"
+          RUN_STARTED_AT="$PR_MERGED_AT"
+        fi
+
+        MINUTES_OF_PR_DEPLOYMENT=$(( ($(date +%s) - $(date -d "$RUN_STARTED_AT" +%s)) / 60 ))
 
         PAYLOAD=$(cat <<EOF
         {
@@ -75,7 +82,7 @@ runs:
             "labels": $LABELS,
             "description": "$(escape_json "$DESCRIPTION")",
             "customfield_16561": "$WHEN_WAS_DEPLOYED",
-            "customfield_26160": $MINUTES_OF_PR_DEVELOPMENT,
+            "customfield_26160": $MINUTES_OF_PR_DEPLOYMENT,
             "customfield_27260": 1,
             "customfield_19460": "$PR_URL",
             "project": { "id": 40203 }

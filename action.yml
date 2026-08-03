@@ -68,7 +68,11 @@ runs:
           RUN_STARTED_AT="$PR_MERGED_AT"
         fi
 
-        MINUTES_OF_PR_DEPLOYMENT=$(( ($(date +%s) - $(date -d "$RUN_STARTED_AT" +%s)) / 60 ))
+        # The deploy runs in a workflow of its own, in parallel to this one, so
+        # its rollout is not part of this run: ~2 minutes for the ECS deploy
+        ESTIMATED_DEPLOY_MINUTES=2
+
+        MINUTES_OF_PR_DEPLOYMENT=$(( ($(date +%s) - $(date -d "$RUN_STARTED_AT" +%s)) / 60 + ESTIMATED_DEPLOY_MINUTES ))
 
         PAYLOAD=$(cat <<EOF
         {

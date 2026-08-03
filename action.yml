@@ -33,13 +33,6 @@ runs:
         PR_URL: ${{ github.event.pull_request.url }}
         PR_AUTHOR: ${{ github.event.pull_request.user.login }}
         EVENT_NAME: ${{ github.event_name }}
-        DEPLOY_STARTED_AT: ${{ github.event.workflow_run.run_started_at }}
-        DEPLOY_FINISHED_AT: ${{ github.event.workflow_run.updated_at }}
-        DEPLOY_HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
-        DEPLOY_COMMIT_MESSAGE: ${{ github.event.workflow_run.head_commit.message }}
-        DEPLOY_RUN_URL: ${{ github.event.workflow_run.html_url }}
-        DEPLOY_ACTOR: ${{ github.event.workflow_run.actor.login }}
-        DEPLOY_WORKFLOW_PATH: ${{ github.event.workflow.path }}
       run: |
         escape_json() {
           local str="$1"
@@ -56,14 +49,16 @@ runs:
         MINUTES_OF_BLUE_GREEN_ROLLOUT=2
         DEPLOY_LABEL=""
 
-        if [ "$EVENT_NAME" = "workflow_run" ]; then
-          # Triggered by the deploy workflow itself: measure that run, and take the
-          # PR data from the commit it deployed
-          WHEN_WAS_DEPLOYED="$DEPLOY_FINISHED_AT"
-          MINUTES_OF_PR_DEPLOYMENT=$(( ($(date -d "$DEPLOY_FINISHED_AT" +%s) - $(date -d "$DEPLOY_STARTED_AT" +%s)) / 60 + MINUTES_OF_BLUE_GREEN_ROLLOUT ))
-          DEPLOY_LABEL="sub-deploy-$(basename "$DEPLOY_WORKFLOW_PATH" .yml)"
+        WHEN_WAS_DEPLOYED=$(date -Iseconds)
+        RUN_STARTED_AT=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" --jq '.run_started_at' || true)
 
-          PULL_REQUEST=$(gh api "repos/$GITHUB_REPOSITORY/commits/$DEPLOY_HEAD_SHA/pulls" --jq '.[0] // empty' || true)
+        if [ "$EVENT_NAME" != "pull_request" ]; then
+          # Called from the deploy workflow itself, so this run is the deployment.
+          # There is no pull_request payload here: the PR comes from the commit
+          DEPLOY_WORKFLOW=$(basename "${GITHUB_WORKFLOW_REF%@*}")
+          DEPLOY_LABEL="sub-deploy-${DEPLOY_WORKFLOW%.*}"
+
+          PULL_REQUEST=$(gh api "repos/$GITHUB_REPOSITORY/commits/$GITHUB_SHA/pulls" --jq '.[0] // empty' || true)
 
           if [ -n "$PULL_REQUEST" ]; then
             SUMMARY=$(jq -r '.title' <<< "$PULL_REQUEST")
@@ -71,25 +66,21 @@ runs:
             PR_URL=$(jq -r '.url' <<< "$PULL_REQUEST")
             PR_AUTHOR=$(jq -r '.user.login' <<< "$PULL_REQUEST")
           else
-            echo "::warning::No pull request found for $DEPLOY_HEAD_SHA, using the commit instead"
-            SUMMARY=$(head -1 <<< "$DEPLOY_COMMIT_MESSAGE")
-            DESCRIPTION="$DEPLOY_COMMIT_MESSAGE"
-            PR_URL="$DEPLOY_RUN_URL"
-            PR_AUTHOR="$DEPLOY_ACTOR"
+            echo "::warning::No pull request found for $GITHUB_SHA, using the commit instead"
+            COMMIT_MESSAGE=$(gh api "repos/$GITHUB_REPOSITORY/commits/$GITHUB_SHA" --jq '.commit.message' || true)
+            SUMMARY=$(head -1 <<< "$COMMIT_MESSAGE")
+            DESCRIPTION="$COMMIT_MESSAGE"
+            PR_URL="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/commit/$GITHUB_SHA"
+            PR_AUTHOR="$GITHUB_ACTOR"
           fi
-        else
-          # Triggered by the merged PR, in parallel to the deploy: the closest we
-          # can measure is this run, which only reports
-          WHEN_WAS_DEPLOYED=$(date -Iseconds)
-          RUN_STARTED_AT=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" --jq '.run_started_at' || true)
-
-          if [ -z "$RUN_STARTED_AT" ] || [ "$RUN_STARTED_AT" = "null" ]; then
-            echo "::warning::Could not read run_started_at, falling back to the PR merge time"
-            RUN_STARTED_AT="$PR_MERGED_AT"
-          fi
-
-          MINUTES_OF_PR_DEPLOYMENT=$(( ($(date +%s) - $(date -d "$RUN_STARTED_AT" +%s)) / 60 + MINUTES_OF_BLUE_GREEN_ROLLOUT ))
         fi
+
+        if [ -z "$RUN_STARTED_AT" ] || [ "$RUN_STARTED_AT" = "null" ]; then
+          echo "::warning::Could not read run_started_at, falling back to the merge time"
+          RUN_STARTED_AT="${PR_MERGED_AT:-now}"
+        fi
+
+        MINUTES_OF_PR_DEPLOYMENT=$(( ($(date +%s) - $(date -d "$RUN_STARTED_AT" +%s)) / 60 + MINUTES_OF_BLUE_GREEN_ROLLOUT ))
 
         TO_ADD_LABELS=()
         IFS=',' read -ra TO_ADD_LABELS <<< "$EXTRA_LABELS"

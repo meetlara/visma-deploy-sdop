@@ -130,7 +130,13 @@ runs:
 
         echo "Request: $PAYLOAD"
         echo "Response: $JIRA_RESPONSE"
-        echo "response=$JIRA_RESPONSE" >> $GITHUB_OUTPUT
+
+        # A multiline response breaks the key=value form of GITHUB_OUTPUT
+        {
+          echo "response<<JIRA_RESPONSE_EOF"
+          echo "$JIRA_RESPONSE"
+          echo "JIRA_RESPONSE_EOF"
+        } >> "$GITHUB_OUTPUT"
 
     - name: Transition ticket status
       shell: bash

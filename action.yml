@@ -47,7 +47,6 @@ runs:
         # AWS keeps rolling out the Blue/Green deployment after the workflow is
         # already done, so those minutes are never part of any run we can measure
         MINUTES_OF_BLUE_GREEN_ROLLOUT=2
-        DEPLOY_LABEL=""
 
         WHEN_WAS_DEPLOYED=$(date -Iseconds)
         RUN_STARTED_AT=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" --jq '.run_started_at' || true)
@@ -55,9 +54,6 @@ runs:
         if [ "$EVENT_NAME" != "pull_request" ]; then
           # Called from the deploy workflow itself, so this run is the deployment.
           # There is no pull_request payload here: the PR comes from the commit
-          DEPLOY_WORKFLOW=$(basename "${GITHUB_WORKFLOW_REF%@*}")
-          DEPLOY_LABEL="sub-deploy-${DEPLOY_WORKFLOW%.*}"
-
           PULL_REQUEST=$(gh api "repos/$GITHUB_REPOSITORY/commits/$GITHUB_SHA/pulls" --jq '.[0] // empty' || true)
 
           if [ -n "$PULL_REQUEST" ]; then
@@ -87,10 +83,6 @@ runs:
 
         TO_ADD_LABELS+=("sub-repo-$GH_REPOSITORY")
         TO_ADD_LABELS+=("sub-author-$PR_AUTHOR")
-
-        if [ -n "$DEPLOY_LABEL" ]; then
-          TO_ADD_LABELS+=("$DEPLOY_LABEL")
-        fi
 
         if [ "$TEST" = "true" ]; then
           TO_ADD_LABELS+=("SDOPexclude")

@@ -27,11 +27,12 @@ runs:
         EXTRA_LABELS: ${{ inputs.extra_labels }}
         SUMMARY: ${{ github.event.pull_request.title }}
         DESCRIPTION: ${{ github.event.pull_request.body }}
-        PR_CREATED_AT: ${{ github.event.pull_request.created_at }}
         PR_MERGED_AT: ${{ github.event.pull_request.merged_at }}
         GH_REPOSITORY: ${{ github.event.repository.name }}
+        GH_TOKEN: ${{ github.token }}
         PR_URL: ${{ github.event.pull_request.url }}
         PR_AUTHOR: ${{ github.event.pull_request.user.login }}
+        EVENT_NAME: ${{ github.event_name }}
       run: |
         escape_json() {
           local str="$1"
@@ -43,7 +44,40 @@ runs:
           echo "$str"
         }
         
+        # AWS keeps rolling out the Blue/Green deployment after the workflow is
+        # already done, so those minutes are never part of any run we can measure
+        MINUTES_OF_BLUE_GREEN_ROLLOUT=2
+
         WHEN_WAS_DEPLOYED=$(date -Iseconds)
+        RUN_STARTED_AT=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" --jq '.run_started_at' || true)
+
+        if [ "$EVENT_NAME" != "pull_request" ]; then
+          # Called from the deploy workflow itself, so this run is the deployment.
+          # There is no pull_request payload here: the PR comes from the commit
+          PULL_REQUEST=$(gh api "repos/$GITHUB_REPOSITORY/commits/$GITHUB_SHA/pulls" --jq '.[0] // empty' || true)
+
+          if [ -n "$PULL_REQUEST" ]; then
+            SUMMARY=$(jq -r '.title' <<< "$PULL_REQUEST")
+            DESCRIPTION=$(jq -r '.body // ""' <<< "$PULL_REQUEST")
+            PR_URL=$(jq -r '.url' <<< "$PULL_REQUEST")
+            PR_AUTHOR=$(jq -r '.user.login' <<< "$PULL_REQUEST")
+          else
+            echo "::warning::No pull request found for $GITHUB_SHA, using the commit instead"
+            COMMIT_MESSAGE=$(gh api "repos/$GITHUB_REPOSITORY/commits/$GITHUB_SHA" --jq '.commit.message' || true)
+            SUMMARY=$(head -1 <<< "$COMMIT_MESSAGE")
+            DESCRIPTION="$COMMIT_MESSAGE"
+            PR_URL="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/commit/$GITHUB_SHA"
+            PR_AUTHOR="$GITHUB_ACTOR"
+          fi
+        fi
+
+        if [ -z "$RUN_STARTED_AT" ] || [ "$RUN_STARTED_AT" = "null" ]; then
+          echo "::warning::Could not read run_started_at, falling back to the merge time"
+          RUN_STARTED_AT="${PR_MERGED_AT:-now}"
+        fi
+
+        MINUTES_OF_PR_DEPLOYMENT=$(( ($(date +%s) - $(date -d "$RUN_STARTED_AT" +%s)) / 60 + MINUTES_OF_BLUE_GREEN_ROLLOUT ))
+
         TO_ADD_LABELS=()
         IFS=',' read -ra TO_ADD_LABELS <<< "$EXTRA_LABELS"
 
@@ -60,22 +94,19 @@ runs:
         LABELS=$(printf '"%s",' "${TO_ADD_LABELS[@]}")
         LABELS="[${LABELS%,}]"
 
-        # Calculate difference in minutes
-        MINUTES_OF_PR_DEVELOPMENT=$(( ($(date -d "$PR_MERGED_AT" +%s) - $(date -d "$PR_CREATED_AT" +%s)) / 60 ))
-
         PAYLOAD=$(cat <<EOF
         {
           "verb": "POST",
           "fields": {
             "issuetype": { "name": "SDOP Deployment" },
-            "summary": "$SUMMARY",
+            "summary": "$(escape_json "$SUMMARY")",
             "components": [
               { "name": "1988-Lara AI" }
             ],
             "labels": $LABELS,
             "description": "$(escape_json "$DESCRIPTION")",
             "customfield_16561": "$WHEN_WAS_DEPLOYED",
-            "customfield_26160": $MINUTES_OF_PR_DEVELOPMENT,
+            "customfield_26160": $MINUTES_OF_PR_DEPLOYMENT,
             "customfield_27260": 1,
             "customfield_19460": "$PR_URL",
             "project": { "id": 40203 }
@@ -91,7 +122,13 @@ runs:
 
         echo "Request: $PAYLOAD"
         echo "Response: $JIRA_RESPONSE"
-        echo "response=$JIRA_RESPONSE" >> $GITHUB_OUTPUT
+
+        # A multiline response breaks the key=value form of GITHUB_OUTPUT
+        {
+          echo "response<<JIRA_RESPONSE_EOF"
+          echo "$JIRA_RESPONSE"
+          echo "JIRA_RESPONSE_EOF"
+        } >> "$GITHUB_OUTPUT"
 
     - name: Transition ticket status
       shell: bash

@@ -1,14 +1,18 @@
-name: Create a jira ticket for SDOP
-description: "Work only for PR comments"
+name: Report the deployment to Visma Hubble
+description: "Registers the deployment in Hubble for the Engineering Performance (ENGP/SDOP) metrics"
 inputs:
-  jira_token:
-    description: Jira token to create ticket
+  hubble_client_id:
+    description: Visma Connect client id with the VismaHubbleTrackingApi:deploymentsWrite scope
     required: true
-  jira_base_url:
-    description: Jira base url
+  hubble_client_secret:
+    description: Visma Connect client secret
     required: true
+  components:
+    description: ENGP components (comma separated) that resolve to the Hubble application
+    required: false
+    default: "1988-Lara AI"
   extra_labels:
-    description: Extra labels to add to the ticket
+    description: Extra labels to add to the deployment
     required: false
   test:
     description: Is this execution a test/dry-run
@@ -17,12 +21,12 @@ inputs:
 runs:
   using: "composite"
   steps:
-    - name: Create Jira Ticket for SDOP Deployment
-      id: create_jira
+    - name: Report the deployment to Visma Hubble
       shell: bash
       env:
-        JIRA_TOKEN: ${{ inputs.jira_token }}
-        JIRA_BASE_URL: ${{ inputs.jira_base_url }}
+        HUBBLE_CLIENT_ID: ${{ inputs.hubble_client_id }}
+        HUBBLE_CLIENT_SECRET: ${{ inputs.hubble_client_secret }}
+        COMPONENTS: ${{ inputs.components }}
         TEST: ${{ inputs.test }}
         EXTRA_LABELS: ${{ inputs.extra_labels }}
         SUMMARY: ${{ github.event.pull_request.title }}
@@ -30,25 +34,22 @@ runs:
         PR_MERGED_AT: ${{ github.event.pull_request.merged_at }}
         GH_REPOSITORY: ${{ github.event.repository.name }}
         GH_TOKEN: ${{ github.token }}
-        PR_URL: ${{ github.event.pull_request.url }}
+        PR_URL: ${{ github.event.pull_request.html_url }}
         PR_AUTHOR: ${{ github.event.pull_request.user.login }}
         EVENT_NAME: ${{ github.event_name }}
       run: |
-        escape_json() {
-          local str="$1"
-          str="${str//\\/\\\\}"   # \ → \\  
-          str="${str//\"/\\\"}"   # " → \"
-          str="${str//$'\n'/\\n}" # newline → \n
-          str="${str//$'\r'/}"    # remove carriage returns
-          str="${str//$'\t'/\\t}" # tab → \t
-          echo "$str"
-        }
-        
+        set -euo pipefail
+
+        CONNECT_TOKEN_URL="https://connect.visma.com/connect/token"
+        HUBBLE_DEPLOYMENTS_URL="https://k8s.hubble.visma.com/tracking-system/api/deployments"
+        HUBBLE_STATUS_RELEASED=2
+
         # AWS keeps rolling out the Blue/Green deployment after the workflow is
         # already done, so those minutes are never part of any run we can measure
         MINUTES_OF_BLUE_GREEN_ROLLOUT=2
 
         WHEN_WAS_DEPLOYED=$(date -Iseconds)
+        RUN_URL="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
         RUN_STARTED_AT=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" --jq '.run_started_at' || true)
 
         if [ "$EVENT_NAME" != "pull_request" ]; then
@@ -59,7 +60,7 @@ runs:
           if [ -n "$PULL_REQUEST" ]; then
             SUMMARY=$(jq -r '.title' <<< "$PULL_REQUEST")
             DESCRIPTION=$(jq -r '.body // ""' <<< "$PULL_REQUEST")
-            PR_URL=$(jq -r '.url' <<< "$PULL_REQUEST")
+            PR_URL=$(jq -r '.html_url' <<< "$PULL_REQUEST")
             PR_AUTHOR=$(jq -r '.user.login' <<< "$PULL_REQUEST")
           else
             echo "::warning::No pull request found for $GITHUB_SHA, using the commit instead"
@@ -78,80 +79,66 @@ runs:
 
         MINUTES_OF_PR_DEPLOYMENT=$(( ($(date +%s) - $(date -d "$RUN_STARTED_AT" +%s)) / 60 + MINUTES_OF_BLUE_GREEN_ROLLOUT ))
 
-        TO_ADD_LABELS=()
-        IFS=',' read -ra TO_ADD_LABELS <<< "$EXTRA_LABELS"
+        # Hubble refuses to release a deployment without a description
+        DESCRIPTION=$(printf '%s\n\n%s' "$PR_URL" "$DESCRIPTION")
 
-        TO_ADD_LABELS+=("sub-repo-$GH_REPOSITORY")
-        TO_ADD_LABELS+=("sub-author-$PR_AUTHOR")
-
-        if [ "$TEST" = "true" ]; then
-          TO_ADD_LABELS+=("SDOPexclude")
+        LABELS=("sub-repo-$GH_REPOSITORY" "sub-author-$PR_AUTHOR")
+        if [ -n "$EXTRA_LABELS" ]; then
+          IFS=',' read -ra EXTRA <<< "$EXTRA_LABELS"
+          LABELS+=("${EXTRA[@]}")
         fi
 
-        for i in "${!TO_ADD_LABELS[@]}"; do
-            TO_ADD_LABELS[$i]=$(echo "${TO_ADD_LABELS[$i]}" | xargs)
-        done
-        LABELS=$(printf '"%s",' "${TO_ADD_LABELS[@]}")
-        LABELS="[${LABELS%,}]"
+        IS_EXCLUDED_FROM_METRICS=false
+        if [ "$TEST" = "true" ]; then
+          LABELS+=("SDOPexclude")
+          IS_EXCLUDED_FROM_METRICS=true
+        fi
 
-        PAYLOAD=$(cat <<EOF
-        {
-          "verb": "POST",
-          "fields": {
-            "issuetype": { "name": "SDOP Deployment" },
-            "summary": "$(escape_json "$SUMMARY")",
-            "components": [
-              { "name": "1988-Lara AI" }
-            ],
-            "labels": $LABELS,
-            "description": "$(escape_json "$DESCRIPTION")",
-            "customfield_16561": "$WHEN_WAS_DEPLOYED",
-            "customfield_26160": $MINUTES_OF_PR_DEPLOYMENT,
-            "customfield_27260": 1,
-            "customfield_19460": "$PR_URL",
-            "project": { "id": 40203 }
-          }
-        }
-        EOF
-        )
+        ACCESS_TOKEN=$(curl --silent --show-error --fail-with-body "$CONNECT_TOKEN_URL" \
+          --data-urlencode "grant_type=client_credentials" \
+          --data-urlencode "client_id=$HUBBLE_CLIENT_ID" \
+          --data-urlencode "client_secret=$HUBBLE_CLIENT_SECRET" \
+          --data-urlencode "scope=VismaHubbleTrackingApi:deploymentsWrite" \
+          | jq -r '.access_token')
+        echo "::add-mask::$ACCESS_TOKEN"
 
-        JIRA_RESPONSE=$(curl --location "$JIRA_BASE_URL/jira/createIssue" \
-          --header "Authorization: Bearer $JIRA_TOKEN" \
-          --header "Content-Type: application/json" \
-          --data "$PAYLOAD")
+        PAYLOAD=$(jq -n \
+          --arg summary "$SUMMARY" \
+          --arg description "$DESCRIPTION" \
+          --arg components "$COMPONENTS" \
+          --arg deploymentDateTime "$WHEN_WAS_DEPLOYED" \
+          --argjson minutes "$MINUTES_OF_PR_DEPLOYMENT" \
+          --arg buildInfoUrl "$RUN_URL" \
+          --argjson isExcludedFromMetrics "$IS_EXCLUDED_FROM_METRICS" \
+          '{
+            summary: $summary,
+            description: $description,
+            components: ($components | split(",") | map(gsub("^\\s+|\\s+$"; ""))),
+            deploymentDateTime: $deploymentDateTime,
+            deploymentDurationMinutes: $minutes,
+            totalLeadTimeMinutes: $minutes,
+            numberOfChanges: 1,
+            buildInfoUrl: $buildInfoUrl,
+            labels: ($ARGS.positional | map(gsub("^\\s+|\\s+$"; "")) | map(select(. != ""))),
+            isExcludedFromMetrics: $isExcludedFromMetrics
+          }' --args "${LABELS[@]}")
 
         echo "Request: $PAYLOAD"
-        echo "Response: $JIRA_RESPONSE"
 
-        # A multiline response breaks the key=value form of GITHUB_OUTPUT
-        {
-          echo "response<<JIRA_RESPONSE_EOF"
-          echo "$JIRA_RESPONSE"
-          echo "JIRA_RESPONSE_EOF"
-        } >> "$GITHUB_OUTPUT"
-
-    - name: Transition ticket status
-      shell: bash
-      env:
-        JIRA_TOKEN: ${{ inputs.jira_token }}
-        JIRA_BASE_URL: ${{ inputs.jira_base_url }}
-      run: |
-        JIRA_TICKET_ID=$(echo "${{ fromJSON(steps.create_jira.outputs.response).value.key }}")
-
-        PAYLOAD=$(cat <<EOF
-        { "transition": { "id": "21" } }
-        EOF
-        )
-
-        JIRA_RESPONSE=$(curl --location "$JIRA_BASE_URL/jira/transitionIssue?issueIdOrKey=$JIRA_TICKET_ID" \
-          --header "Authorization: Bearer $JIRA_TOKEN" \
+        DEPLOYMENT=$(curl --silent --show-error --fail-with-body "$HUBBLE_DEPLOYMENTS_URL" \
+          --header "Authorization: Bearer $ACCESS_TOKEN" \
           --header "Content-Type: application/json" \
           --data "$PAYLOAD")
 
-        echo "Transition response: $JIRA_RESPONSE"
-        echo "Issue key: $JIRA_TICKET_ID"
-        
-        
+        echo "Response: $DEPLOYMENT"
+        DEPLOYMENT_KEY=$(jq -r '.externalId' <<< "$DEPLOYMENT")
 
-        
+        # A create carries no status: every deployment starts as Started
+        RELEASED=$(curl --silent --show-error --fail-with-body --request PATCH \
+          "$HUBBLE_DEPLOYMENTS_URL/$DEPLOYMENT_KEY/status" \
+          --header "Authorization: Bearer $ACCESS_TOKEN" \
+          --header "Content-Type: application/json" \
+          --data "{\"status\": $HUBBLE_STATUS_RELEASED}")
 
+        echo "Release response: $RELEASED"
+        echo "Deployment key: $DEPLOYMENT_KEY"

@@ -7,10 +7,17 @@ inputs:
   hubble_client_secret:
     description: Visma Connect client secret
     required: true
-  components:
-    description: ENGP components (comma separated) that resolve to the Hubble application
+  application_external_id:
+    description: Hubble product id of the application (it replaces the Jira component)
     required: false
-    default: "1988-Lara AI"
+    default: "1988"
+  deployment_status:
+    description: Outcome of the deploy step (steps.deployment.outcome). success is reported as Released, failure as Failed, anything else is not reported
+    required: false
+    default: "success"
+  deployment_start:
+    description: When the deploy step started (ISO 8601). Defaults to the start of this run attempt
+    required: false
   extra_labels:
     description: Extra labels to add to the deployment
     required: false
@@ -18,15 +25,25 @@ inputs:
     description: Is this execution a test/dry-run
     required: false
     default: "false"
+outputs:
+  deployment_key:
+    description: The Hubble deployment key, e.g. DPL_42
+    value: ${{ steps.report.outputs.deployment_key }}
+  deployment_url:
+    description: Link to the deployment in Hubble
+    value: ${{ steps.report.outputs.deployment_url }}
 runs:
   using: "composite"
   steps:
     - name: Report the deployment to Visma Hubble
+      id: report
       shell: bash
       env:
         HUBBLE_CLIENT_ID: ${{ inputs.hubble_client_id }}
         HUBBLE_CLIENT_SECRET: ${{ inputs.hubble_client_secret }}
-        COMPONENTS: ${{ inputs.components }}
+        APPLICATION_EXTERNAL_ID: ${{ inputs.application_external_id }}
+        DEPLOYMENT_STATUS: ${{ inputs.deployment_status }}
+        DEPLOYMENT_START: ${{ inputs.deployment_start }}
         TEST: ${{ inputs.test }}
         EXTRA_LABELS: ${{ inputs.extra_labels }}
         SUMMARY: ${{ github.event.pull_request.title }}
@@ -42,15 +59,27 @@ runs:
 
         CONNECT_TOKEN_URL="https://connect.visma.com/connect/token"
         HUBBLE_DEPLOYMENTS_URL="https://k8s.hubble.visma.com/tracking-system/api/deployments"
+        HUBBLE_DEPLOYMENT_PAGE_URL="https://hubble.visma.com/management/engineering-performance/deployments"
         HUBBLE_STATUS_RELEASED=2
+        HUBBLE_STATUS_FAILED=3
+
+        case "$DEPLOYMENT_STATUS" in
+          success) STATUS=$HUBBLE_STATUS_RELEASED ;;
+          failure) STATUS=$HUBBLE_STATUS_FAILED ;;
+          *)
+            # The deploy step never ran (an earlier step failed) or was cancelled:
+            # there is no deployment to report
+            echo "::notice::Deploy step outcome is '${DEPLOYMENT_STATUS:-empty}', nothing to report"
+            exit 0
+            ;;
+        esac
 
         # AWS keeps rolling out the Blue/Green deployment after the workflow is
         # already done, so those minutes are never part of any run we can measure
         MINUTES_OF_BLUE_GREEN_ROLLOUT=2
 
         WHEN_WAS_DEPLOYED=$(date -Iseconds)
-        RUN_URL="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
-        RUN_STARTED_AT=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" --jq '.run_started_at' || true)
+        RUN_URL="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/attempts/$GITHUB_RUN_ATTEMPT"
 
         if [ "$EVENT_NAME" != "pull_request" ]; then
           # Called from the deploy workflow itself, so this run is the deployment.
@@ -62,22 +91,48 @@ runs:
             DESCRIPTION=$(jq -r '.body // ""' <<< "$PULL_REQUEST")
             PR_URL=$(jq -r '.html_url' <<< "$PULL_REQUEST")
             PR_AUTHOR=$(jq -r '.user.login' <<< "$PULL_REQUEST")
+            PR_MERGED_AT=$(jq -r '.merged_at // empty' <<< "$PULL_REQUEST")
           else
             echo "::warning::No pull request found for $GITHUB_SHA, using the commit instead"
-            COMMIT_MESSAGE=$(gh api "repos/$GITHUB_REPOSITORY/commits/$GITHUB_SHA" --jq '.commit.message' || true)
+            COMMIT=$(gh api "repos/$GITHUB_REPOSITORY/commits/$GITHUB_SHA" || echo "{}")
+            COMMIT_MESSAGE=$(jq -r '.commit.message // ""' <<< "$COMMIT")
             SUMMARY=$(head -1 <<< "$COMMIT_MESSAGE")
             DESCRIPTION="$COMMIT_MESSAGE"
             PR_URL="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/commit/$GITHUB_SHA"
             PR_AUTHOR="$GITHUB_ACTOR"
+            PR_MERGED_AT=$(jq -r '.commit.committer.date // empty' <<< "$COMMIT")
           fi
         fi
 
-        if [ -z "$RUN_STARTED_AT" ] || [ "$RUN_STARTED_AT" = "null" ]; then
-          echo "::warning::Could not read run_started_at, falling back to the merge time"
-          RUN_STARTED_AT="${PR_MERGED_AT:-now}"
+        if [ -z "$DEPLOYMENT_START" ]; then
+          # run_started_at is the start of the current attempt, so a re-run measures itself
+          DEPLOYMENT_START=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" --jq '.run_started_at' || true)
+        fi
+        if [ -z "$DEPLOYMENT_START" ] || [ "$DEPLOYMENT_START" = "null" ]; then
+          echo "::warning::Could not read when the deployment started, using the merge time"
+          DEPLOYMENT_START="${PR_MERGED_AT:-now}"
+        fi
+        if [ -z "$PR_MERGED_AT" ]; then
+          echo "::warning::Could not read the merge time, using when the deployment started"
+          PR_MERGED_AT="$DEPLOYMENT_START"
         fi
 
-        MINUTES_OF_PR_DEPLOYMENT=$(( ($(date +%s) - $(date -d "$RUN_STARTED_AT" +%s)) / 60 + MINUTES_OF_BLUE_GREEN_ROLLOUT ))
+        minutes_since() {
+          echo $(( ($(date +%s) - $(date -d "$1" +%s)) / 60 + MINUTES_OF_BLUE_GREEN_ROLLOUT ))
+        }
+
+        if [ "$STATUS" = "$HUBBLE_STATUS_RELEASED" ]; then
+          MINUTES_OF_DEPLOYMENT=$(minutes_since "$DEPLOYMENT_START")
+          # The lead time runs from the merge, so a deploy re-run after a failure
+          # carries the time the change waited
+          MINUTES_OF_LEAD_TIME=$(minutes_since "$PR_MERGED_AT")
+          NUMBER_OF_CHANGES=1
+        else
+          # A failed deployment delivers nothing: its change is counted by the run that releases it
+          MINUTES_OF_DEPLOYMENT=0
+          MINUTES_OF_LEAD_TIME=0
+          NUMBER_OF_CHANGES=0
+        fi
 
         # Hubble refuses to release a deployment without a description
         DESCRIPTION=$(printf '%s\n\n%s' "$PR_URL" "$DESCRIPTION")
@@ -88,12 +143,6 @@ runs:
           LABELS+=("${EXTRA[@]}")
         fi
 
-        IS_EXCLUDED_FROM_METRICS=false
-        if [ "$TEST" = "true" ]; then
-          LABELS+=("SDOPexclude")
-          IS_EXCLUDED_FROM_METRICS=true
-        fi
-
         ACCESS_TOKEN=$(curl --silent --show-error --fail-with-body "$CONNECT_TOKEN_URL" \
           --data-urlencode "grant_type=client_credentials" \
           --data-urlencode "client_id=$HUBBLE_CLIENT_ID" \
@@ -102,26 +151,28 @@ runs:
           | jq -r '.access_token')
         echo "::add-mask::$ACCESS_TOKEN"
 
+        # An explicit false would override an exclusion label, so only true is sent
         PAYLOAD=$(jq -n \
           --arg summary "$SUMMARY" \
           --arg description "$DESCRIPTION" \
-          --arg components "$COMPONENTS" \
+          --argjson applicationExternalId "$APPLICATION_EXTERNAL_ID" \
           --arg deploymentDateTime "$WHEN_WAS_DEPLOYED" \
-          --argjson minutes "$MINUTES_OF_PR_DEPLOYMENT" \
+          --argjson deploymentDurationMinutes "$MINUTES_OF_DEPLOYMENT" \
+          --argjson totalLeadTimeMinutes "$MINUTES_OF_LEAD_TIME" \
+          --argjson numberOfChanges "$NUMBER_OF_CHANGES" \
           --arg buildInfoUrl "$RUN_URL" \
-          --argjson isExcludedFromMetrics "$IS_EXCLUDED_FROM_METRICS" \
+          --arg test "$TEST" \
           '{
             summary: $summary,
             description: $description,
-            components: ($components | split(",") | map(gsub("^\\s+|\\s+$"; ""))),
+            applicationExternalId: $applicationExternalId,
             deploymentDateTime: $deploymentDateTime,
-            deploymentDurationMinutes: $minutes,
-            totalLeadTimeMinutes: $minutes,
-            numberOfChanges: 1,
+            deploymentDurationMinutes: $deploymentDurationMinutes,
+            totalLeadTimeMinutes: $totalLeadTimeMinutes,
+            numberOfChanges: $numberOfChanges,
             buildInfoUrl: $buildInfoUrl,
-            labels: ($ARGS.positional | map(gsub("^\\s+|\\s+$"; "")) | map(select(. != ""))),
-            isExcludedFromMetrics: $isExcludedFromMetrics
-          }' --args "${LABELS[@]}")
+            labels: ($ARGS.positional | map(gsub("^\\s+|\\s+$"; "")) | map(select(. != "")))
+          } + (if $test == "true" then {isExcludedFromMetrics: true} else {} end)' --args "${LABELS[@]}")
 
         echo "Request: $PAYLOAD"
 
@@ -132,13 +183,18 @@ runs:
 
         echo "Response: $DEPLOYMENT"
         DEPLOYMENT_KEY=$(jq -r '.externalId' <<< "$DEPLOYMENT")
+        DEPLOYMENT_URL="$HUBBLE_DEPLOYMENT_PAGE_URL/$(jq -r '.token' <<< "$DEPLOYMENT")"
 
         # A create carries no status: every deployment starts as Started
-        RELEASED=$(curl --silent --show-error --fail-with-body --request PATCH \
+        TRANSITIONED=$(curl --silent --show-error --fail-with-body --request PATCH \
           "$HUBBLE_DEPLOYMENTS_URL/$DEPLOYMENT_KEY/status" \
           --header "Authorization: Bearer $ACCESS_TOKEN" \
           --header "Content-Type: application/json" \
-          --data "{\"status\": $HUBBLE_STATUS_RELEASED}")
+          --data "{\"status\": $STATUS}")
 
-        echo "Release response: $RELEASED"
-        echo "Deployment key: $DEPLOYMENT_KEY"
+        echo "Transition response: $TRANSITIONED"
+        echo "::notice title=Deployment $DEPLOYMENT_KEY in Hubble::$DEPLOYMENT_URL"
+        {
+          echo "deployment_key=$DEPLOYMENT_KEY"
+          echo "deployment_url=$DEPLOYMENT_URL"
+        } >> "$GITHUB_OUTPUT"
